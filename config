@@ -1,0 +1,42 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+#srieck 10.18.2023
+###############################################################################################
+# Testing details 
+###############################################################################################
+
+#Redshift details
+USER_NAME = ''
+DEV_PASSWORD=  ''
+PREPROD_PASSWORD = ''
+PROD_PASSWORD = ''
+ENV_NAME = 'prod'
+
+# Database details
+SOURCE_DATABASE = 'landing'
+TARGET_DATABASE = 'ceirra'
+#TARGET_DATABASE = 'cdw'
+
+#Test details
+SCHEMA_NAME = 'datadock'
+MAP_FILE_NAME = 'Orapp sttm.xlsx'
+MAP_SHEET_NAME = 'sttm'
+
+#Stored procedure file 
+STORED_PROCEDURE_FILE = 'IMS_StoredProcedure.sql'
+
+#ALM file details
+ALM_TEST_STEPS = 'TestPlans.xlsx'
+
+#Tests to run use True or False to run tests
+TEST_COUNTS = True
+TEST_STRUCTURE = True
+TEST_VALIDATION = True
+
+#Generate ALM documentatio
+RUN_ALM_PLANS = True
+
+###############################################################################################
+# END 
+###############################################################################################
