@@ -1,0 +1,149 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+#srieck 8.1.2023
+# test_venv\Scripts\activate.bat
+
+#libs, mods, pkgs
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import openpyxl
+import sqlite3
+import redshift_connector
+from datetime import datetime
+import config
+
+# Redshift Connection Details 
+class getCred():
+    def __init__(self, ENV_NAME=None, USER_NAME=None):
+        self.ENV_NAME = ENV_NAME
+        self.USER_NAME = USER_NAME
+
+    def getHost(self):
+        if self.ENV_NAME=='dev':
+            HOST_NAME='host_name'
+        elif self.ENV_NAME=='preprod': 
+            HOST_NAME='host_name' 
+        else: 
+            self.ENV_NAME=='prod'
+            HOST_NAME='host_name'   
+        return HOST_NAME
+
+    def getPw(self):
+        if self.ENV_NAME=='dev':
+            pw=config.DEV_PASSWORD 
+        elif self.ENV_NAME=='preprod':
+            pw=config.PREPROD_PASSWORD
+        else:
+            self.ENV_NAME=='prod'
+            pw=config.PROD_PASSWORD
+        return pw   
+        
+#create the sqlite db and dataframes for sql tables
+
+schema = config.SCHEMA_NAME
+today=datetime.today().strftime('%Y.%m.%d')
+conn3 = sqlite3.connect('temp_database.db')
+mappingDF = pd.read_excel(config.MAP_FILE_NAME, sheet_name=config.MAP_SHEET_NAME, engine='openpyxl')
+mappingDF.to_sql('mapping', conn3, if_exists='replace') 
+TKey = pd.read_sql("""select distinct lower([Target Table Name]) as [Target Table Name] from mapping """, conn3)
+#print(TKey)
+TKey1 = TKey['Target Table Name'].values.tolist()
+
+targetSQL = """ select
+            table_schema,   
+            table_name, 
+            column_name, 
+            data_type, 
+            character_maximum_length,
+            is_nullable
+            from information_schema.columns c
+            where table_name in ({}); """.format(' , '.join(["'{}'".format(value) for value in TKey1]))
+
+Key = pd.read_sql("""select distinct lower([Source Table Name]) as [Source Table Name] from mapping """, conn3)
+Key1 = Key['Source Table Name'].values.tolist()
+
+sourceSQL = """ select
+            table_schema,   
+            table_name, 
+            column_name, 
+            data_type, 
+            character_maximum_length,
+            is_nullable
+            from information_schema.columns c
+            where table_schema = '{}'; """.format(schema)
+
+matchSQL = """ with m as (select distinct [Source Table Name], 
+            [Source Column Name], 
+            [Target Table Name], 
+            [Target Column Name] 
+            from mapping)
+            , t as (select * from Target)
+            , s as (select * from Source1)  
+            select distinct [Source Table Name], 
+            [Source Column Name], 
+            [Target Table Name], 
+            [Target Column Name],
+            t.data_type as [Target Data Type], 
+            s.data_type as [Source Data Type], 
+            t.is_nullable as [Target Nullable],
+            s.is_nullable as [Source Nullable],
+            case when t.data_type = s.data_type then 'True'
+                when t.data_type is null and s.data_type is null then 'True'
+                else 'False' end as [Data Type Match],
+            case when t.character_maximum_length = s.character_maximum_length then 'True' 
+                when t.character_maximum_length is null and  s.character_maximum_length is null then 'True'
+                else 'False' end as [character_maximum_length Match],  
+            case when t.is_nullable = s.is_nullable then 'True'
+                when t.is_nullable is null and s.is_nullable is null then 'True'
+                 else 'False' end as [is_nullable Match]
+            from m
+            left join t on lower(m.[Target Table Name]) || '.' || lower(m.[Target Column Name]) = lower(t.table_name) || '.' || lower(t.column_name)
+            left join s on lower(m.[Source Table Name]) || '.' || lower(m.[Source Column Name]) = lower(s.table_name) || '.' || lower(s.column_name); """
+
+def matchCon(): 
+    if config.SOURCE_DATABASE == 'landing':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        sourceConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.SOURCE_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),  
+            ssl=True) 
+
+        cursor_source = sourceConn.cursor()
+        cursor_source.execute(sourceSQL)
+        source_results = pd.DataFrame(cursor_source.fetch_dataframe())
+        source_results.to_sql('Source1', conn3, if_exists='replace')
+    
+    if config.TARGET_DATABASE == 'ceirra':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        targetConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.TARGET_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),        
+            ssl=True) 
+
+    cursor_target = targetConn.cursor()
+    cursor_target.execute(targetSQL)
+    target_results= pd.DataFrame(cursor_target.fetch_dataframe())
+    target_results.to_sql('Target', conn3, if_exists='replace')
+    BOOYAH = pd.read_sql(matchSQL, conn3)
+    #print(BOOYAH)
+    BOOYAH.to_excel("{}_{}_{}_Regression_Testing.xlsx".format(config.ENV_NAME, schema, today), index=False, engine='openpyxl')
+    cursor_source.close()
+    cursor_target.close()
+    sourceConn.close()
+    targetConn.close()
+    conn3.close()
+
+if __name__ == '__main__':
+    try: matchCon()
+    except Exception as e:
+        print(e)
+    else: 
+        print("#### Data Structure Regression Testing Concluded Without Error ####")
