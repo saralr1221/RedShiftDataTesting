@@ -1,0 +1,160 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+# srieck 4/26/2023
+# test_venv\Scripts\activate.bat
+# create --name test_env python=3.6
+# conda activate test_env
+
+import pandas as pd
+import os
+import openpyxl
+import sqlite3
+from pandas import ExcelWriter
+from pandas.core import indexing
+from datetime import datetime
+import config
+
+###############################################################################################
+# ENTER TESTING VARIABLES 
+###############################################################################################
+
+fName = config.MAP_FILE_NAME
+Sheet = config.MAP_SHEET_NAME
+schema = config.SCHEMA_NAME
+env = config.ENV_NAME
+
+
+###############################################################################################
+# DO NOT WRITE BELOW THIS LINE 
+###############################################################################################
+
+cwd = os.getcwd()
+fn = os.path.join(cwd,fName)
+FileN = os.path.join(cwd, config.ALM_TEST_STEPS)
+today=datetime.today().strftime('%Y.%m.%d')
+
+
+
+countSQL = """ select 
+                [Test Name],
+                [Step Name (Design Steps)],
+                [Description (Design Steps)],
+                [Expected Result (Design Steps)],
+                Subject,
+                Type
+                from    
+                (select distinct [Test Name],
+                    s.[Step Number] as [Step Name (Design Steps)],
+                    case when s.[Step Description] like 'Query table schema%' 
+                    then s.[Step Description] || ' landing'
+                    when s.[Step Description] like 'Verify data type%'
+                    then s.[Step Description] || ' ' || 'ceirra.cdw_common.' || [Target Table Name] 
+                    else s.[Step Description]
+                end as [Description (Design Steps)],
+                s.[Expected Results] as [Expected Result (Design Steps)],
+                [Test Name],
+                x.Subject,
+                x.Type
+                from
+                (select
+                    [Step Number],
+                    [Step Description],                          
+                    [Expected Results],
+                    dummy   
+                from test_stepsDS ) s
+                join
+                (select
+                    'Verify data structure between landing for link Vs. corresponding CDW table view ceirra.cdw_common.' || [Target Table Name] as [Test Name],
+                    '{} {} Data Count Verification' as Subject,
+                    'Manual' as Type,
+                    [Target Table Name],
+                    [Source Table Name],
+                    '1' as dummy
+                from data
+                ) x  on x.dummy = s.dummy) y """.format(schema, env)
+
+structSQL =   """ select 
+                    [Test Name],
+                    [Step Name (Design Steps)],
+                    [Description (Design Steps)],
+                    [Expected Result (Design Steps)],
+                    Subject,
+                    Type
+                    from    
+                    (select distinct [Test Name],
+                        s.[Step Number] as [Step Name (Design Steps)],
+                        case when s.[Step Description] like 'Query table schema%' 
+                        then s.[Step Description] || ' landing'
+                        when s.[Step Description] like 'Verify data type%'
+                        then s.[Step Description] || ' ' || 'ceirra.cdw_common.' || [Target Table Name] 
+                        else s.[Step Description]
+                    end as [Description (Design Steps)],
+                    s.[Expected Results] as [Expected Result (Design Steps)],
+                    [Test Name],
+                    x.Subject,
+                    x.Type
+                    from
+                    (select
+                        [Step Number],
+                        [Step Description],                          
+                        [Expected Results],
+                        dummy   
+                    from test_stepsDS ) s
+                    join
+                    (select
+                        'Verify data structure between landing for link Vs. corresponding CDW table view ceirra.cdw_common.' || [Target Table Name] as [Test Name],
+                        '{} {} Data Structure Verification' as Subject,
+                        'Manual' as Type,
+                        [Target Table Name],
+                        [Source Table Name],
+                        '1' as dummy
+                    from data
+                    ) x  on x.dummy = s.dummy) y """.format(schema, env)                 
+
+
+
+def getSheet():
+    if env=='dev':
+        sName='dev_counts_test_steps' 
+    elif env=='preprod': 
+        sName='preprod_counts_test_steps' 
+    else: 
+        env=='prod'
+        sName='prod_counts_test_steps'     
+    return sName
+
+def getSheet2():
+    if env=='dev':
+        sName2='dev_table_structure_steps' 
+    elif env=='preprod': 
+        sName2='preprod_table_structure_steps'   
+    else: 
+        env=='prod'
+        sName2='prod_table_structure'  
+    return sName2   
+
+def genT():
+    sName = getSheet() 
+    sName2 = getSheet2() 
+    df = pd.read_excel(fn, Sheet, engine='openpyxl')
+    df2 = pd.read_excel(FileN, sName, engine='openpyxl')
+    df3 = pd.read_excel(FileN, sName2, engine='openpyxl')
+    conn = sqlite3.connect('temp_database.db')
+    df.to_sql('data', conn, if_exists='replace')
+    df2.to_sql('test_steps', conn, if_exists='replace')
+    df3.to_sql('test_stepsDS', conn, if_exists='replace')
+    dfCount = pd.read_sql(countSQL, conn)
+    dfStruct = pd.read_sql(structSQL, conn)
+    conn.close()
+
+    with pd.ExcelWriter('{} {} tests.xlsx'.format(env, schema)) as writer:  
+        dfCount.to_excel(writer, sheet_name='Data Counts', index=None,)
+        dfStruct.to_excel(writer, sheet_name='Data Structure', index=None)
+
+if __name__ == "__main__":
+    try: genT()
+    except Exception as e:
+        print(e)
+    else: 
+        print("##### ALM test plans were generated on {}! #####".format(today))
