@@ -1,0 +1,180 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+#srieck 8.1.2023
+# test_venv\Scripts\activate.bat
+
+#libs, mods, pkgs
+import pandas as pd
+from pandas.core import indexing
+from pandas.core.indexes.base import Index
+import numpy as np
+from pathlib import Path
+import openpyxl
+import sqlite3
+import redshift_connector
+from datetime import datetime
+import os
+from timeit import default_timer as timer
+import time
+import config
+
+# Redshift Connection Details 
+class getCred():
+    def __init__(self, ENV_NAME=None, USER_NAME=None):
+        self.ENV_NAME = ENV_NAME
+        self.USER_NAME = USER_NAME
+
+    def getHost(self):
+        if self.ENV_NAME=='dev':
+            HOST_NAME='host_name'
+        elif self.ENV_NAME=='preprod': 
+            HOST_NAME='host_name' 
+        else: 
+            self.ENV_NAME=='prod'
+            HOST_NAME='host_name'   
+        return HOST_NAME
+
+    def getPw(self):
+        if self.ENV_NAME=='dev':
+            pw=config.DEV_PASSWORD 
+        elif self.ENV_NAME=='preprod':
+            pw=config.PREPROD_PASSWORD
+        else: 
+            self.ENV_NAME=='prod'
+            pw=config.PROD_PASSWORD
+        return pw   
+
+today=datetime.today().strftime('%Y.%m.%d')
+start = time.time()
+dur = timer()
+schema = config.SCHEMA_NAME
+today=datetime.today().strftime('%Y.%m.%d')
+mapping_file = config.MAP_FILE_NAME
+conn3 = sqlite3.connect('temp_database.db')
+mapDF = pd.read_excel(mapping_file, sheet_name=config.MAP_SHEET_NAME, engine='openpyxl')
+
+data = []
+data1 = []
+
+
+querySQL = """  select * from mapping """
+
+
+def autoTest():
+    conn = sqlite3.connect('temp_database.db') 
+    mapDF.to_sql('q', conn, if_exists='replace')
+    mapDF.to_sql('mapping', conn, if_exists='replace') 
+
+    df3 = pd.read_sql("""
+                        with k as (Select 
+                            [Source Table Name],
+                            [Source Column Name],
+                            [Target Table Name],
+                            case when [Target Nullable] = 'NO' then [Target Column Name]
+                                else null 
+                                end as primarykeys2,  
+                            case when [Source Nullable] = 'NO' then [Source Table Name] || '.' || [Source Column Name]
+                                else null 
+                                end as primarykeys1,    
+                            [Target Nullable]
+                        from mapping) 
+                        , J AS (select distinct row_number() over(Partition By k.[Source Table Name]) as rn,
+                            k.[Target Table Name],
+                            k.[Source Table Name],
+                            'select ' || primarykeys1 || ' from landing.{}.' || k.[Source Table Name] || ' order by ' || primarykeys1 || ' limit 1; ' as Source_Query,
+                            'select ' || primarykeys2 || ' from cdw_facility.' || k.[Target Table Name]  || ' order by ' || primarykeys2 || ' limit 1;' as Target_Query
+                        from k
+                        join q on k.[Target Table Name] = q.[Target Table Name])
+                       select * from j where Target_Query is not null and rn = 1
+
+                    """.format(schema), conn)
+    print(df3)
+    return df3
+
+def genQuery():
+    mappingDF = autoTest()
+    mappingDF.dropna(axis=0, inplace=True)
+    mappingDF.to_sql('mapping', conn3, if_exists='replace') 
+    generateQuery = pd.read_sql(querySQL, conn3)
+    print(generateQuery)
+    return generateQuery
+
+
+def RedShiftCon(): 
+    if config.TARGET_DATABASE == 'ceirra':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        ceirraConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.TARGET_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),    
+            ssl=True)            
+        cursor_ceirra = ceirraConn.cursor()
+    
+
+    if config.SOURCE_DATABASE == 'landing':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        landingConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.TARGET_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),  
+            ssl=True)            
+        cursor_landing = landingConn.cursor()
+
+        df = pd.DataFrame()
+        generateQuery = pd.read_excel('generateQuery.xlsx', engine='openpyxl')
+        data = pd.DataFrame()
+        data1 = pd.DataFrame()
+        n = {'Ceirra Results': ['n']}
+        ndata = pd.DataFrame(data=n)
+        for i in range(0, len(generateQuery)):
+            v = generateQuery['Target_Query'].iloc[i]
+            x = generateQuery['Source_Query'].iloc[i]
+            targetSQL = """ {} """.format(v)
+            sourceSQL = """ {} """.format(x)
+            print(targetSQL)
+            print(sourceSQL)
+            cursor_ceirra.execute(targetSQL)  
+            cursor_landing.execute(sourceSQL)      
+
+            result = pd.DataFrame(cursor_landing.fetch_dataframe())
+            result1 = pd.DataFrame(cursor_ceirra.fetch_dataframe())
+            result['list'] = result.values.tolist()
+            result1['list'] = result1.values.tolist()
+            result = result['list'].apply(lambda x: ''.join(str(x)))
+            result1 = result1['list'].apply(lambda x: ''.join(str(x)))    
+            data = pd.concat([data, pd.DataFrame([result])], ignore_index=True)
+            data1 = pd.concat([data1, pd.DataFrame([result1])], ignore_index=True)
+            frames = [ndata, data, data1]
+            df = pd.concat(frames, axis=1)
+            df.columns = df.iloc[0]
+            df.drop(df.index[0])
+            # print(df)
+        cursor_ceirra.close 
+        cursor_landing.close   
+        print(df)
+        return df
+
+   
+
+def formatResults():
+    df1 = genQuery()
+    df1.reset_index(inplace=True)
+    df2 = RedShiftCon()
+    df2.reset_index(inplace=True)
+    #frames = [df1, df2]
+    dataValidationRESULTS = pd.concat([df1.reset_index(drop=True), df2.reset_index(drop=True)], ignore_index=False, axis=1)
+    dataValidationRESULTS.to_excel("dataValidationRESULTS_{}_{}.xlsx".format(schema, today), index=None, engine='openpyxl')
+        
+
+
+# if __name__ == '__main__':
+#     try: formatResults()
+#     except Exception as e:
+#         print(e)
+#     else: 
+#         print("Data Validation Concluded on {}!".format(today))
