@@ -1,0 +1,39 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+#srieck 10.18.2023
+# test_venv\Scripts\activate.bat
+
+#libs, mods, pkgs
+import config
+import DataStructureVAL
+import DataValidation
+import CountVerificationStoredProcedure
+import Prod_TestPlans
+
+###########################################################
+
+if config.TEST_STRUCTURE == True:
+    DataStructureVAL.matchCon()
+    print("Data structure testing is complete")
+else: 
+    print("Data structure testing was not selected to run")
+    pass
+if config.TEST_COUNTS == True:
+    CountVerificationStoredProcedure.formatResults()
+    print("Data counts testing is complete")
+else: 
+    print("Data counts testing was not selected to run")
+    pass
+if config.TEST_VALIDATION == True:
+    DataValidation.formatResults()
+    print("Data validation Testing is complete")
+else: 
+    print("Data validation testing was not selected to run")
+    pass
+if config.RUN_ALM_PLANS == True:
+    Prod_TestPlans.genT()
+    print('ALM test plans have been generated')
+else:
+    print('ALM test plans were not selected to run')
+    pass
