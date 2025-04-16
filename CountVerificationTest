@@ -1,0 +1,233 @@
+#!/usr/bin python
+# -*- coding: utf-8 -*-
+
+#srieck 9.22.2023
+# test_venv\Scripts\activate.bat
+
+#libs, mods, pkgs
+from sqlite3.dbapi2 import InterfaceError
+import pandas as pd
+from pandas.core import indexing
+from pandas.core.indexes.base import Index
+import numpy as np
+from pathlib import Path
+import openpyxl
+import sqlite3
+import redshift_connector
+from datetime import datetime
+import os
+import glob 
+from timeit import default_timer as timer
+import time
+from datetime import datetime
+import config
+
+# Redshift Connection Details 
+class getCred():
+    def __init__(self, ENV_NAME=None, USER_NAME=None):
+        self.ENV_NAME = ENV_NAME
+        self.USER_NAME = USER_NAME
+
+    def getHost(self):
+        if self.ENV_NAME=='dev':
+            HOST_NAME='host_name'
+        elif self.ENV_NAME=='preprod': 
+            HOST_NAME='host_name' 
+        else: 
+            self.ENV_NAME=='prod'
+            HOST_NAME='host_name'   
+        return HOST_NAME
+
+    def getPw(self):
+        if self.ENV_NAME=='dev':
+            pw=config.DEV_PASSWORD 
+        elif self.ENV_NAME=='preprod':
+            pw=config.PREPROD_PASSWORD
+        else: 
+            self.ENV_NAME=='prod'
+            pw=config.PROD_PASSWORD
+        return pw   
+
+today=datetime.today().strftime('%Y.%m.%d')
+start = time.time()
+dur = timer()
+schema = config.SCHEMA_NAME
+today=datetime.today().strftime('%Y.%m.%d')
+mapping_file = config.MAP_FILE_NAME
+conn = sqlite3.connect('temp_database.db')
+mapDF = pd.read_excel(mapping_file, sheet_name=config.MAP_SHEET_NAME, engine='openpyxl')
+data = []
+data1 = []
+
+
+def modFile():
+    cwd = os.getcwd()
+    if config.STORED_PROCEDURE_FILE is not None:
+        listing = os.listdir(cwd)
+        # for infile in listing:
+        #     print(os.path.splitext(infile)[0])
+    else:
+        pass
+
+        with open(
+            'newsql.txt', 'r') as r, open(
+                'newsql.txt', 'w') as o:
+
+            for line in r:
+                if line.strip():
+                    o.write(line.lower())
+                if " ".join(line.split()):
+                    o.write(line.lower())    
+
+        f = open(config.STORED_PROCEDURE_FILE)
+        contents = f.read()
+        #print(contents)
+        f.close()
+        new_contents = contents.replace('\n', ' ').replace('(', 'targetcolList').replace(' and ', '(+) and').replace('where 1 = 1 (+)', 'where 1 = 1').replace(';', '; \n').replace('select', '\n ').replace('from', '\n select count(1) from ').replace('--fields', '').replace('TargetColList+)', '')
+        f = open('newsql.txt', 'w')
+        f.write(new_contents)
+        f.close()
+        df = pd.read_csv(r'newsql.txt', low_memory=True, header=None, names=['SQL'], sep='\n', engine='python')
+        df['C'] = np.arange(len(df))
+        df = pd.DataFrame(data=df)
+        return df 
+    
+
+queries = pd.read_sql("""
+                    with k as (Select 
+                        [Source Table Name],
+                        [Source Column Name],
+                        [Target Table Name],
+                        case when [Target Nullable] like 'N%' then [Target Column Name]
+                            else null 
+                            end as primarykeys2,  
+                        case when [Source Nullable] like 'N%' then [Source Table Name] || '.' || [Source Column Name]
+                            else null 
+                            end as primarykeys1,    
+                        [Target Nullable]
+                    from mapping) 
+                    , J AS (select distinct row_number() over(Partition By k.[Source Table Name]) as rn,
+                        k.[Target Table Name],
+                        k.[Source Table Name],
+                        'select count(*) as Landing_Results from landing.{}.' || lower(k.[Source Table Name]) || ' ; ' as stQuery,
+                        'select count(*) as Cierra_Results from ceirra.cdw_facility.' || lower(k.[Target Table Name]) || ' ;' as ttQuery
+                    from k
+                    --join q on lower(k.[Target Table Name]) = lower(q.[Target Table Name])
+                      )
+                   select * from j 
+                   where ttQuery is not null and rn = 1
+
+                """.format(schema), conn)
+
+
+#########################################################################################################################33
+
+querySQL = """ with t as (select distinct
+            mapping.[Target Table Name] from mapping)
+            , q as (select ttQuery as Target_Query,
+            case when stQuery like '%,%' then replace(stQuery, ';', '(+) ;') else stQuery end as Source_Query
+            from queries )
+            select * from q left join t on q.Target_Query like '%'+ t.[Target Table Name] +'%'
+            where Source_Query is not null; """.format(schema)
+            
+def genQuery():    
+    df = modFile()
+    df = pd.DataFrame(data=df)
+    df.to_sql('data', conn, if_exists='replace') 
+    mapDF.to_sql('mapping', conn, if_exists='replace') 
+    queries.to_sql('queries', conn, if_exists='replace') 
+    generateQuery = pd.read_sql(querySQL, conn)
+    print(generateQuery)
+    generateQuery.to_excel("generateQuery.xlsx".format(schema, today), engine='openpyxl')
+    return generateQuery
+
+
+def TargetCon(): 
+    if config.TARGET_DATABASE == 'ceirra':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        ceirraConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.TARGET_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),    
+            ssl=True)            
+        cursor_ceirra = ceirraConn.cursor()
+
+        generateQuery = genQuery()
+        data1 = pd.DataFrame(columns = ["Ceirra Results"])
+        n = {'Ceirra Results': ['n']}
+        ndata1 = pd.DataFrame(data=n)
+        for i in range(0, len(generateQuery)):
+            v = generateQuery['Target_Query'].iloc[i]
+            targetSQL = """ {} """.format(v)
+            #print(targetSQL)
+            cursor_ceirra.execute(targetSQL)       
+            result1 = pd.DataFrame(cursor_ceirra.fetch_dataframe())
+            result1['list'] = result1.values.tolist()
+            result1 = result1['list'].apply(lambda x: ''.join(str(x)))
+            print(result1)
+            data1 = pd.concat([data1, pd.DataFrame([result1])], ignore_index=True)
+            #print(data1)
+        cursor_ceirra.close  
+        ceirraConn.close  
+        return data1
+
+
+def LandingCon(): 
+    if config.SOURCE_DATABASE == 'landing':
+        cred = getCred(config.ENV_NAME, config.USER_NAME)
+        landingConn = redshift_connector.connect(
+            host=cred.getHost(),
+            database=config.TARGET_DATABASE,
+            port=443,
+            user=cred.USER_NAME,
+            password=cred.getPw(),  
+            ssl=True)            
+        cursor_landing = landingConn.cursor()
+
+        generateQuery = genQuery()
+        data2 = pd.DataFrame(columns = ["Landing Results"])
+        n = {'Landing Results': ['n']}
+        ndata2 = pd.DataFrame(data=n)
+        for i in range(0, len(generateQuery)):
+            v = generateQuery['Source_Query'].iloc[i]
+            sourceSQL = """ {} """.format(v)
+            cursor_landing.execute(sourceSQL)       
+            result = pd.DataFrame(cursor_landing.fetch_dataframe())
+            result['list'] = result.values.tolist()
+            result = result['list'].apply(lambda x: ''.join(str(x)))
+            print(result)
+            data2 = pd.concat([data2, pd.DataFrame([result])], ignore_index=True)
+        cursor_landing.close    
+        landingConn.close
+        return data2
+   
+
+def formatResults():
+    df1 = genQuery()
+    df1.reset_index(inplace=True)
+    # print(df1)
+    # df1.to_excel("dV1_{}_{}.xlsx".format(schema, today), encoding='utf-8', engine='openpyxl')
+    df2 = TargetCon()
+    df2.reset_index(inplace=True)
+    # df2.to_excel("dV2_{}_{}.xlsx".format(schema, today), encoding='utf-8', engine='openpyxl')
+    df3 = LandingCon()
+    df3.reset_index(inplace=True)
+    #df3.to_excel("dV3_{}_{}.xlsx".format(schema, today), encoding='utf-8', engine='openpyxl')
+    #frames = [df1.reset_index(drop=True), df2.reset_index(drop=True), df3.reset_index(drop=True)]
+    dataValidationRESULTS = pd.concat([df1.reset_index(drop=True), df2.reset_index(drop=True), df3.reset_index(drop=True)], ignore_index=False, axis=1)
+    dataValidationRESULTS.to_excel("Denormalized_Counts_RESULTS_{}_{}.xlsx".format(schema, today), index=None, engine='openpyxl')
+
+
+
+
+if __name__ == '__main__':
+    try: formatResults()
+    except Exception as e:
+        print(e) 
+    else: 
+        print("Data Counts Concluded Without Error on {}!".format(today))
+        
+        
+
